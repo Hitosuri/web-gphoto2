@@ -32,11 +32,13 @@ export function rethrowIfCritical(err: any) {
 const INTERFACE_CLASS = 6; // PTP
 const INTERFACE_SUBCLASS = 1; // MTP
 
-let ModulePromise: Promise<Module>;
+let ModulePromise: Promise<Module> | undefined;
 
 export class Camera {
   #queue: Promise<any> = Promise.resolve();
   #context: Context | null = null;
+  #disconnecting = false;
+  #onDisconnect: (() => void) | null = null;
 
   static async showPicker() {
     // @ts-ignore
@@ -58,23 +60,104 @@ export class Camera {
     return Module.detectCameras();
   }
 
-  async connect() {
-    if (!ModulePromise) {
-      ModulePromise = initModule();
+  get isConnected(): boolean {
+    try {
+      return this.#context !== null && !this.#context.isDeleted();
+    } catch {
+      return false;
     }
-    let Module = await ModulePromise;
-    this.#context = await new Module.Context();
+  }
+
+  set onDisconnect(callback: (() => void) | null) {
+    this.#onDisconnect = callback;
+  }
+
+  async connect() {
+    // Clean up previous connection first
+    if (this.#context) {
+      await this.disconnect();
+    }
+
+    try {
+      if (!ModulePromise) {
+        ModulePromise = initModule();
+      }
+      let Module = await ModulePromise;
+      this.#context = await new Module.Context();
+    } catch (e) {
+      // Connection failed — force fresh WASM module on next attempt
+      this.#context = null;
+      ModulePromise = undefined;
+      throw e;
+    }
   }
 
   async #schedule<T>(op: (context: Context) => Promise<T>): Promise<T> {
-    let res = this.#queue.then(() => op(this.#context!));
-    this.#queue = res.catch(rethrowIfCritical);
+    let res = this.#queue.then(() => {
+      if (!this.#context || this.#context.isDeleted()) {
+        throw new Error('Camera is disconnected');
+      }
+      return op(this.#context);
+    });
+    // Absorb errors to keep the queue chain alive.
+    // The error is already propagated to the caller via `res`.
+    // Previous code called rethrowIfCritical() here which re-threw
+    // RuntimeError, permanently breaking the queue chain.
+    this.#queue = res.catch(async (e) => {
+      if (this.#isDisconnectError(e)) {
+        await this.disconnect();
+      }
+    });
     return res;
   }
 
+  #isDisconnectError(e: any): boolean {
+    if (e instanceof WebAssembly.RuntimeError) return true;
+    const msg = e?.message ?? '';
+    return msg.includes('device was disconnected') ||
+           msg.includes('A transfer error has occurred') ||
+           msg.includes('out of bounds');
+  }
+
   async disconnect() {
-    if (this.#context && !this.#context.isDeleted()) {
-      this.#context.delete();
+    if (this.#disconnecting) return;
+    this.#disconnecting = true;
+
+    try {
+      // 1. Clear context reference FIRST — prevents any queued operation
+      //    from touching the (possibly corrupt) context.
+      const ctx = this.#context;
+      this.#context = null;
+
+      // 2. Reset the operation queue so pending ops get a clean
+      //    'Camera is disconnected' error instead of cascading failures.
+      this.#queue = Promise.resolve();
+
+      // 3. Try to run the C++ destructor. This calls gp_camera_unref →
+      //    gp_camera_exit → libusb close.  It may throw if WASM state is
+      //    corrupt — that is expected after a physical disconnect.
+      if (ctx) {
+        try {
+          if (!ctx.isDeleted()) {
+            ctx.delete();
+          }
+        } catch {
+          // Swallow — WASM heap may be corrupt.
+        }
+      }
+
+      // 4. Drop the WASM module so the next connect() creates a fresh
+      //    instance.  Once ModulePromise and #context are both null the
+      //    old Module becomes unreachable and eligible for GC — including
+      //    its entire ArrayBuffer heap and all emval handles.
+      ModulePromise = undefined;
+
+      // 5. Notify listener
+      if (this.#onDisconnect) {
+        try { this.#onDisconnect(); } catch { /* listener error is not our problem */ }
+      }
+    } finally {
+      this.#disconnecting = false;
     }
   }
 
@@ -83,10 +166,7 @@ export class Camera {
   }
 
   async getSupportedOps() {
-    if (this.#context) {
-      return await this.#context.supportedOps();
-    }
-    throw new Error('You need to connect to the camera first');
+    return this.#schedule(async context => context.supportedOps());
   }
 
   async setConfigValue(name: string, value: string | number | boolean) {
