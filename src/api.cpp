@@ -24,6 +24,9 @@
 #include <cstring>
 #include <iostream>
 
+#include <gphoto2/gphoto2-abilities-list.h>
+#include <gphoto2/gphoto2-port-info-list.h>
+
 using emscripten::val;
 
 template <typename T, auto Deleter>
@@ -54,6 +57,41 @@ const thread_local val Uint8Array = val::global("Uint8Array");
 const thread_local val Blob = val::global("Blob");
 const thread_local val File = val::global("File");
 const thread_local val arrayOf = val::global("Array")["of"];
+
+val detectCameras() {
+  gpp_unique_ptr<GPContext, gp_context_unref> context(gp_context_new());
+  gp_context_set_error_func(context.get(), gpp_log_error, nullptr);
+
+  gpp_unique_ptr<GPPortInfoList, gp_port_info_list_free> port_info_list(
+      GPP_CALL(GPPortInfoList *, gp_port_info_list_new(_)));
+  gpp_try(gp_port_info_list_load(port_info_list.get()));
+
+  gpp_unique_ptr<CameraAbilitiesList, gp_abilities_list_free> abilities_list(
+      GPP_CALL(CameraAbilitiesList *, gp_abilities_list_new(_)));
+  gpp_try(gp_abilities_list_load(abilities_list.get(), context.get()));
+
+  gpp_unique_ptr<CameraList, gp_list_free> list(
+      GPP_CALL(CameraList *, gp_list_new(_)));
+  gpp_try(gp_abilities_list_detect(abilities_list.get(), port_info_list.get(),
+                                   list.get(), context.get()));
+
+  int count = gp_list_count(list.get());
+  val result = val::array();
+
+  for (int i = 0; i < count; i++) {
+    const char *name;
+    const char *value;
+    gpp_try(gp_list_get_name(list.get(), i, &name));
+    gpp_try(gp_list_get_value(list.get(), i, &value));
+
+    val info = val::object();
+    info.set("model", std::string(name));
+    info.set("port", std::string(value));
+    result.call<void>("push", info);
+  }
+
+  return result;
+}
 
 class Context {
  public:
@@ -309,6 +347,7 @@ class Context {
 };
 
 EMSCRIPTEN_BINDINGS(gphoto2_js_api) {
+  emscripten::function("detectCameras", &detectCameras);
   emscripten::class_<Context>("Context")
       .constructor<>()
       .function("configToJS", &Context::configToJS)

@@ -50,6 +50,14 @@ export class Camera {
     });
   }
 
+  static async autoDetect() {
+    if (!ModulePromise) {
+      ModulePromise = initModule();
+    }
+    let Module = await ModulePromise;
+    return Module.detectCameras();
+  }
+
   async connect() {
     if (!ModulePromise) {
       ModulePromise = initModule();
