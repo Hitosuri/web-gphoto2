@@ -135,6 +135,74 @@ class Context {
     return had_events;
   }
 
+  val waitForEvent(int timeout) {
+    CameraEventType event_type = GP_EVENT_UNKNOWN;
+    gpp_unique_ptr<void, free> event_data(GPP_CALL(
+        void *, gp_camera_wait_for_event(camera.get(), timeout, &event_type, _,
+                                         context.get())));
+
+    val result = val::object();
+
+    switch (event_type) {
+      case GP_EVENT_TIMEOUT:
+        result.set("type", std::string("timeout"));
+        break;
+      case GP_EVENT_FILE_ADDED: {
+        auto *path = static_cast<CameraFilePath *>(event_data.get());
+        result.set("type", std::string("file_added"));
+        result.set("folder", std::string(path->folder));
+        result.set("name", std::string(path->name));
+        break;
+      }
+      case GP_EVENT_FOLDER_ADDED: {
+        auto *path = static_cast<CameraFilePath *>(event_data.get());
+        result.set("type", std::string("folder_added"));
+        result.set("folder", std::string(path->folder));
+        result.set("name", std::string(path->name));
+        break;
+      }
+      case GP_EVENT_FILE_CHANGED: {
+        auto *path = static_cast<CameraFilePath *>(event_data.get());
+        result.set("type", std::string("file_changed"));
+        result.set("folder", std::string(path->folder));
+        result.set("name", std::string(path->name));
+        break;
+      }
+      case GP_EVENT_CAPTURE_COMPLETE:
+        result.set("type", std::string("capture_complete"));
+        break;
+      case GP_EVENT_UNKNOWN:
+      default:
+        result.set("type", std::string("unknown"));
+        if (event_data.get()) {
+          result.set("data",
+                     std::string(static_cast<char *>(event_data.get())));
+        }
+        break;
+    }
+
+    return result;
+  }
+
+  val downloadFile(std::string folder, std::string name) {
+    auto &f = get_file();
+
+    gpp_try(gp_camera_file_get(camera.get(), folder.c_str(), name.c_str(),
+                                GP_FILE_TYPE_NORMAL, &f, context.get()));
+
+    gpp_try(gp_file_set_name(&f, name.c_str()));
+    auto js_name = val(GPP_CALL(const char *, gp_file_get_name(&f, _)));
+
+    auto params = blob_chunks_and_opts(f);
+    return File.new_(std::move(params.first), std::move(js_name),
+                     std::move(params.second));
+  }
+
+  void deleteFile(std::string folder, std::string name) {
+    gpp_try(gp_camera_file_delete(camera.get(), folder.c_str(), name.c_str(),
+                                   context.get()));
+  }
+
   val configToJS() {
     GPPWidget config(GPP_CALL(
         CameraWidget *, gp_camera_get_config(camera.get(), _, context.get())));
@@ -355,5 +423,8 @@ EMSCRIPTEN_BINDINGS(gphoto2_js_api) {
       .function("capturePreviewAsBlob", &Context::capturePreviewAsBlob)
       .function("captureImageAsFile", &Context::captureImageAsFile)
       .function("consumeEvents", &Context::consumeEvents)
+      .function("waitForEvent", &Context::waitForEvent)
+      .function("downloadFile", &Context::downloadFile)
+      .function("deleteFile", &Context::deleteFile)
       .function("supportedOps", &Context::supportedOps);
 }

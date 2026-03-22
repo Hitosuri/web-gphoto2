@@ -16,9 +16,18 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-import initModule, { Context, Module } from '../build/libapi.mjs';
+import initModule, { CameraEvent, Context, Module } from '../build/libapi.mjs';
 
-export type { Config, SupportedOps } from '../build/libapi.mjs';
+export type { CameraEvent, Config, SupportedOps } from '../build/libapi.mjs';
+
+export interface TetheredOptions {
+  formats?: string[];
+  deleteAfterDownload?: boolean;
+  timeout?: number;
+  signal: AbortSignal;
+  onFile?: (file: File, event: CameraEvent) => void;
+  onEvent?: (event: CameraEvent) => void;
+}
 
 // A helper that allows to distinguish critical errors from library errors.
 export function rethrowIfCritical(err: any) {
@@ -190,5 +199,58 @@ export class Camera {
 
   async consumeEvents() {
     return this.#schedule(context => context.consumeEvents());
+  }
+
+  async waitForEvent(timeout: number = 1000): Promise<CameraEvent> {
+    return this.#schedule(context => context.waitForEvent(timeout));
+  }
+
+  async downloadFile(folder: string, name: string): Promise<File> {
+    return this.#schedule(context => context.downloadFile(folder, name));
+  }
+
+  async deleteFile(folder: string, name: string): Promise<void> {
+    return this.#schedule(context => context.deleteFile(folder, name));
+  }
+
+  async startTetheredCapture(options: TetheredOptions): Promise<void> {
+    const {
+      formats,
+      deleteAfterDownload = false,
+      timeout = 1000,
+      signal,
+      onFile,
+      onEvent
+    } = options;
+
+    const normalizedFormats = formats?.map(f => f.toLowerCase().replace(/^\./, ''));
+
+    while (!signal.aborted) {
+      let event: CameraEvent;
+      try {
+        event = await this.waitForEvent(timeout);
+      } catch (e: any) {
+        if (signal.aborted) break;
+        throw e;
+      }
+
+      if (signal.aborted) break;
+      if (onEvent) onEvent(event);
+
+      if (event.type === 'file_added' && event.folder && event.name) {
+        const ext = event.name.split('.').pop()?.toLowerCase() ?? '';
+        const wanted = !normalizedFormats || normalizedFormats.length === 0 ||
+                       normalizedFormats.includes(ext);
+
+        if (wanted && onFile) {
+          const file = await this.downloadFile(event.folder, event.name);
+          onFile(file, event);
+        }
+
+        if (deleteAfterDownload || !wanted) {
+          await this.deleteFile(event.folder, event.name).catch(() => {});
+        }
+      }
+    }
   }
 }
