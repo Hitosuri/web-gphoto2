@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>web-gphoto2 Test</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        button { margin: 4px; padding: 8px 14px; cursor: pointer; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        #status { font-weight: bold; padding: 6px 14px; border-radius: 4px; display: inline-block; margin-bottom: 12px; }
+        .s-off  { background: #fee; color: #b00; }
+        .s-busy { background: #ffe; color: #a80; }
+        .s-on   { background: #efe; color: #080; }
+        #log { white-space: pre-wrap; background: #f5f5f5; padding: 10px; margin-top: 12px; border: 1px solid #ccc; max-height: 350px; overflow: auto; font-size: 13px; }
+        .controls { margin-bottom: 12px; }
+        .tether-section { border: 1px solid #ccc; padding: 12px; margin-bottom: 12px; border-radius: 4px; }
+        .tether-section h3 { margin: 0 0 8px 0; }
+        #tetheredFiles { list-style: none; padding: 0; }
+        #tetheredFiles li { padding: 4px 0; }
+        #tetheredFiles a { color: #06c; }
+        #formatFilter { width: 200px; padding: 4px; }
+    </style>
+</head>
+<body>
+    <h1>web-gphoto2 Test</h1>
+
+    <div id="status" class="s-off">Disconnected</div>
+
+    <div class="controls">
+        <button id="btnAutoDetect">Auto Detect</button>
+        <button id="btnRequest">Request Device</button>
+        <button id="btnConnect">Connect</button>
+        <button id="btnDisconnect" disabled>Disconnect</button>
+    </div>
+    <div class="controls">
+        <button id="btnConfig" disabled>Get Config</button>
+        <button id="btnPreview" disabled>Capture Preview</button>
+        <button id="btnCapture" disabled>Capture Image</button>
+        <button id="btnListFiles" disabled>List Files</button>
+    </div>
+
+    <div class="tether-section">
+        <h3>Tethered Capture</h3>
+        <label>Format filter: <input id="formatFilter" type="text" placeholder="e.g. jpg,cr2,nef (empty=all)"></label>
+        <label><input id="deleteAfter" type="checkbox"> Delete from camera after download</label>
+        <br><br>
+        <button id="btnTetherStart" disabled>Start Tethered</button>
+        <button id="btnTetherStop" disabled>Stop Tethered</button>
+        <span id="tetherStatus"></span>
+        <div>Frames: <span id="frameCount">0</span></div>
+        <ul id="tetheredFiles"></ul>
+    </div>
+
+    <div id="preview"></div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { Camera } from './build/camera.js';
+
+        const logEl = document.getElementById('log');
+        const statusEl = document.getElementById('status');
+        const previewEl = document.getElementById('preview');
+        const tetherStatusEl = document.getElementById('tetherStatus');
+        const frameCountEl = document.getElementById('frameCount');
+        const tetheredFilesEl = document.getElementById('tetheredFiles');
+        const formatFilterEl = document.getElementById('formatFilter');
+        const deleteAfterEl = document.getElementById('deleteAfter');
+
+        function log(msg) {
+            const t = new Date().toLocaleTimeString();
+            logEl.textContent = `[${t}] ${msg}\n` + logEl.textContent;
+            console.log(msg);
+        }
+
+        // --- UI state helpers ---
+
+        const cameraButtons = ['btnDisconnect', 'btnConfig', 'btnPreview', 'btnCapture', 'btnListFiles', 'btnTetherStart'];
+
+        function setStatus(label, cls) {
+            statusEl.textContent = label;
+            statusEl.className = cls;
+            const on = cls === 's-on';
+            cameraButtons.forEach(id => document.getElementById(id).disabled = !on);
+            if (!on) {
+                document.getElementById('btnTetherStop').disabled = true;
+                stopTether();
+            }
+        }
+
+        // --- Camera instance ---
+
+        let camera = null;
+
+        function handleDisconnect() {
+            camera = null;
+            setStatus('Disconnected', 's-off');
+        }
+
+        // --- WebUSB events ---
+
+        navigator.usb.addEventListener('disconnect', async () => {
+            log('USB device physically disconnected');
+            if (camera) {
+                await camera.disconnect();
+            }
+        });
+
+        navigator.usb.addEventListener('connect', () => {
+            log('USB device plugged in — click Connect to use it');
+        });
+
+        // --- Tethered capture state ---
+
+        let tetherAbort = null;
+        let frameCount = 0;
+
+        function stopTether() {
+            if (tetherAbort) {
+                tetherAbort.abort();
+                tetherAbort = null;
+            }
+            tetherStatusEl.textContent = '';
+            document.getElementById('btnTetherStart').disabled = !camera;
+            document.getElementById('btnTetherStop').disabled = true;
+        }
+
+        // --- Buttons ---
+
+        document.getElementById('btnAutoDetect').onclick = async () => {
+            try {
+                log('Auto detecting...');
+                const list = await Camera.autoDetect();
+                log('Detected ' + list.length + ' camera(s): ' + JSON.stringify(list));
+            } catch (e) {
+                log('Auto detect failed: ' + e.message);
+            }
+        };
+
+        document.getElementById('btnRequest').onclick = async () => {
+            try {
+                await Camera.showPicker();
+                log('Device permission granted');
+            } catch (e) {
+                log('Request cancelled: ' + e.message);
+            }
+        };
+
+        document.getElementById('btnConnect').onclick = async () => {
+            try {
+                if (camera) {
+                    await camera.disconnect().catch(() => {});
+                    camera = null;
+                }
+
+                setStatus('Connecting...', 's-busy');
+
+                camera = new Camera();
+                camera.onDisconnect = () => {
+                    log('Camera disconnected (cleanup done)');
+                    handleDisconnect();
+                };
+                await camera.connect();
+
+                setStatus('Connected', 's-on');
+                log('Connected to camera');
+            } catch (e) {
+                camera = null;
+                setStatus('Disconnected', 's-off');
+                log('Connection failed: ' + e.message);
+            }
+        };
+
+        document.getElementById('btnDisconnect').onclick = async () => {
+            if (!camera) return;
+            await camera.disconnect();
+        };
+
+        document.getElementById('btnConfig').onclick = async () => {
+            if (!camera) return;
+            try {
+                const config = await camera.getConfig();
+                log('Config: ' + JSON.stringify(config, null, 2));
+            } catch (e) {
+                log('Config error: ' + e.message);
+            }
+        };
+
+        document.getElementById('btnPreview').onclick = async () => {
+            if (!camera) return;
+            try {
+                const blob = await camera.capturePreviewAsBlob();
+                const url = URL.createObjectURL(blob);
+                previewEl.innerHTML = '<img src="' + url + '" style="max-width:400px">';
+                log('Preview captured');
+            } catch (e) {
+                log('Preview error: ' + e.message);
+            }
+        };
+
+        document.getElementById('btnCapture').onclick = async () => {
+            if (!camera) return;
+            try {
+                const file = await camera.captureImageAsFile();
+                const url = URL.createObjectURL(file);
+                previewEl.innerHTML = '<a href="' + url + '" download="' + file.name + '">Download ' + file.name + '</a>';
+                log('Image captured: ' + file.name);
+            } catch (e) {
+                log('Capture error: ' + e.message);
+            }
+        };
+
+        document.getElementById('btnListFiles').onclick = async () => {
+            if (!camera) return;
+            try {
+                log('Listing all files on camera...');
+                const files = await camera.listAllFiles('/');
+                if (files.length === 0) {
+                    log('No files found on camera');
+                    return;
+                }
+                log('Found ' + files.length + ' file(s):');
+                for (const f of files) {
+                    const size = f.size != null ? ' (' + (f.size / 1024).toFixed(1) + ' KB)' : '';
+                    const dims = (f.width && f.height) ? ' ' + f.width + 'x' + f.height : '';
+                    const type = f.type ? ' [' + f.type + ']' : '';
+                    log('  ' + f.folder + f.name + size + dims + type);
+                }
+            } catch (e) {
+                log('List files error: ' + e.message);
+            }
+        };
+
+        document.getElementById('btnTetherStart').onclick = async () => {
+            if (!camera) return;
+
+            const rawFilter = formatFilterEl.value.trim();
+            const formats = rawFilter ? rawFilter.split(',').map(s => s.trim()).filter(Boolean) : undefined;
+            const deleteAfterDownload = deleteAfterEl.checked;
+
+            tetherAbort = new AbortController();
+            frameCount = 0;
+            frameCountEl.textContent = '0';
+            tetheredFilesEl.innerHTML = '';
+
+            document.getElementById('btnTetherStart').disabled = true;
+            document.getElementById('btnTetherStop').disabled = false;
+            tetherStatusEl.textContent = ' Waiting for camera...';
+            log('Tethered capture started' + (formats ? ' (formats: ' + formats.join(', ') + ')' : ' (all formats)'));
+
+            try {
+                await camera.startTetheredCapture({
+                    formats,
+                    deleteAfterDownload,
+                    timeout: 1000,
+                    signal: tetherAbort.signal,
+                    onFile(file, event) {
+                        frameCount++;
+                        frameCountEl.textContent = String(frameCount);
+                        log('Tethered file: ' + file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)');
+
+                        const url = URL.createObjectURL(file);
+                        const li = document.createElement('li');
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = file.name;
+                        a.textContent = file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+                        li.appendChild(a);
+                        tetheredFilesEl.prepend(li);
+
+                        // Show preview if image
+                        if (file.type.startsWith('image/')) {
+                            previewEl.innerHTML = '<img src="' + url + '" style="max-width:400px">';
+                        }
+                    },
+                    onEvent(event) {
+                        if (event.type !== 'timeout') {
+                            log('Event: ' + event.type + (event.name ? ' ' + event.folder + event.name : ''));
+                        }
+                    }
+                });
+            } catch (e) {
+                if (e.message !== 'Camera is disconnected') {
+                    log('Tethered error: ' + e.message);
+                }
+            }
+
+            tetherStatusEl.textContent = ' Stopped';
+            log('Tethered capture stopped (' + frameCount + ' frames)');
+            stopTether();
+        };
+
+        document.getElementById('btnTetherStop').onclick = () => {
+            stopTether();
+            log('Tethered capture stop requested');
+        };
+
+        log('Ready — grant permission then connect');
+    </script>
+</body>
+</html>
