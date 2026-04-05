@@ -40,6 +40,25 @@ declare interface SupportedOps {
   triggerCapture: boolean;
 }
 
+declare interface CameraEvent {
+  type: 'timeout' | 'file_added' | 'folder_added' | 'file_changed' | 'capture_complete' | 'unknown';
+  folder?: string;
+  name?: string;
+  data?: string;
+}
+
+declare interface FileInfo {
+  name: string;
+  folder: string;
+  size?: number;
+  type?: string;
+  width?: number;
+  height?: number;
+  mtime?: number;
+  readable?: boolean;
+  deletable?: boolean;
+}
+
 declare class Context {
   configToJS(): Promise<Config & { type: 'window' }>;
   setConfigValue(
@@ -49,6 +68,11 @@ declare class Context {
   capturePreviewAsBlob(): Promise<Blob>;
   captureImageAsFile(): Promise<File>;
   consumeEvents(): Promise<boolean>;
+  waitForEvent(timeout: number): Promise<CameraEvent>;
+  downloadFile(folder: string, name: string): Promise<File>;
+  deleteFile(folder: string, name: string): Promise<void>;
+  listFolders(folder: string): Promise<string[]>;
+  listFiles(folder: string): Promise<FileInfo[]>;
   supportedOps(): SupportedOps;
 
   delete(): void;
@@ -57,9 +81,10 @@ declare class Context {
 
 export interface Module extends EmscriptenModule {
   Context: typeof Context;
+  detectCameras(): { model: string; port: string }[];
 }
 
-export type { Config, Context, SupportedOps };
+export type { CameraEvent, Config, Context, FileInfo, SupportedOps };
 
 declare const initModule: EmscriptenModuleFactory<Module>;
 export default initModule;
