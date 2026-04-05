@@ -203,6 +203,69 @@ class Context {
                                    context.get()));
   }
 
+  val listFolders(std::string folder) {
+    gpp_unique_ptr<CameraList, gp_list_free> list(
+        GPP_CALL(CameraList *, gp_list_new(_)));
+    gpp_try(gp_camera_folder_list_folders(camera.get(), folder.c_str(),
+                                          list.get(), context.get()));
+
+    val result = val::array();
+    int count = gp_list_count(list.get());
+    for (int i = 0; i < count; i++) {
+      const char *name;
+      gpp_try(gp_list_get_name(list.get(), i, &name));
+      result.call<void>("push", std::string(name));
+    }
+    return result;
+  }
+
+  val listFiles(std::string folder) {
+    gpp_unique_ptr<CameraList, gp_list_free> list(
+        GPP_CALL(CameraList *, gp_list_new(_)));
+    gpp_try(gp_camera_folder_list_files(camera.get(), folder.c_str(),
+                                        list.get(), context.get()));
+
+    val result = val::array();
+    int count = gp_list_count(list.get());
+    for (int i = 0; i < count; i++) {
+      const char *name;
+      gpp_try(gp_list_get_name(list.get(), i, &name));
+
+      val entry = val::object();
+      entry.set("name", std::string(name));
+      entry.set("folder", folder);
+
+      CameraFileInfo info;
+      if (gp_camera_file_get_info(camera.get(), folder.c_str(), name, &info,
+                                  context.get()) == GP_OK) {
+        if (info.file.fields & GP_FILE_INFO_SIZE) {
+          entry.set("size", static_cast<double>(info.file.size));
+        }
+        if (info.file.fields & GP_FILE_INFO_TYPE) {
+          entry.set("type", std::string(info.file.type));
+        }
+        if (info.file.fields & GP_FILE_INFO_WIDTH) {
+          entry.set("width", info.file.width);
+        }
+        if (info.file.fields & GP_FILE_INFO_HEIGHT) {
+          entry.set("height", info.file.height);
+        }
+        if (info.file.fields & GP_FILE_INFO_MTIME) {
+          entry.set("mtime", static_cast<double>(info.file.mtime) * 1000);
+        }
+        if (info.file.fields & GP_FILE_INFO_PERMISSIONS) {
+          entry.set("readable",
+                     (info.file.permissions & GP_FILE_PERM_READ) != 0);
+          entry.set("deletable",
+                     (info.file.permissions & GP_FILE_PERM_DELETE) != 0);
+        }
+      }
+
+      result.call<void>("push", std::move(entry));
+    }
+    return result;
+  }
+
   val configToJS() {
     GPPWidget config(GPP_CALL(
         CameraWidget *, gp_camera_get_config(camera.get(), _, context.get())));
@@ -426,5 +489,7 @@ EMSCRIPTEN_BINDINGS(gphoto2_js_api) {
       .function("waitForEvent", &Context::waitForEvent)
       .function("downloadFile", &Context::downloadFile)
       .function("deleteFile", &Context::deleteFile)
+      .function("listFolders", &Context::listFolders)
+      .function("listFiles", &Context::listFiles)
       .function("supportedOps", &Context::supportedOps);
 }

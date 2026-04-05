@@ -16,9 +16,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-import initModule, { CameraEvent, Context, Module } from '../build/libapi.mjs';
+import initModule, { CameraEvent, Context, FileInfo, Module } from '../build/libapi.mjs';
 
-export type { CameraEvent, Config, SupportedOps } from '../build/libapi.mjs';
+export type { CameraEvent, Config, FileInfo, SupportedOps } from '../build/libapi.mjs';
 
 export interface TetheredOptions {
   formats?: string[];
@@ -211,6 +211,25 @@ export class Camera {
 
   async deleteFile(folder: string, name: string): Promise<void> {
     return this.#schedule(context => context.deleteFile(folder, name));
+  }
+
+  async listFolders(folder: string = '/'): Promise<string[]> {
+    return this.#schedule(context => context.listFolders(folder));
+  }
+
+  async listFiles(folder: string = '/'): Promise<FileInfo[]> {
+    return this.#schedule(context => context.listFiles(folder));
+  }
+
+  async listAllFiles(folder: string = '/'): Promise<FileInfo[]> {
+    const files = await this.listFiles(folder);
+    const subfolders = await this.listFolders(folder);
+    for (const sub of subfolders) {
+      const subPath = folder === '/' ? '/' + sub : folder + '/' + sub;
+      const subFiles = await this.listAllFiles(subPath);
+      files.push(...subFiles);
+    }
+    return files;
   }
 
   async startTetheredCapture(options: TetheredOptions): Promise<void> {
