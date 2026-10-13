@@ -3,3 +3,7 @@ node_modules
 /deps/*
 !/deps/libgphoto2
 /src/api.o
+/build/camera.js
+/build/camera.d.ts
+/build/libapi.mjs
+/build/libapi.wasm
