@@ -1,4 +1,4 @@
 [submodule "libgphoto2"]
 	path = deps/libgphoto2
-	url = https://github.com/RReverser/libgphoto2
-	branch = em
+	url = https://github.com/Hitosuri/libgphoto2
+	branch = em-update
